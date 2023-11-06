@@ -304,6 +304,11 @@ float fcal::audio_stream::get_volume()
     return volume;
 }
 
+bool fcal::audio_stream::is_valid()
+{
+    return success_init;
+}
+
 //Pulls a subset of data out of a .WAV file and converts to a float stream compliant with the native_format format and modifiers such as gain/balance. This function
 //is accessed by the audio buffer loop to play an audio stream.
 float* fcal::audio_stream::pull(unsigned int frames, WAVEFORMATEX* native_format, bool* end)
@@ -383,6 +388,7 @@ void fcal::audio_stream::read_wav_header()
     if(!file)
     {
         std::cerr << "Invalid file filepath! " << filepath << std::endl;
+        return;
     }
 
     /*
@@ -411,6 +417,7 @@ void fcal::audio_stream::read_wav_header()
     {
         std::cerr << "Invalid .WAV type: " << filepath << std::endl;
         std::cerr << "Reads: " << wav_type << std::endl;
+        return;
     }
 
     fseek(file, sizeof(DWORD), SEEK_CUR); //skip the file length.
@@ -419,6 +426,7 @@ void fcal::audio_stream::read_wav_header()
     if(strcmp(wav_type, "WAVE") < 0)
     {
         std::cerr << "WAVE tag not present: " << filepath << std::endl;
+        return;
     }
 
     fread(wav_type, sizeof(char), 4, file);
@@ -426,6 +434,7 @@ void fcal::audio_stream::read_wav_header()
     if(strcmp(wav_type, "fmt ") < 0)
     {
         std::cerr << "Invalid .WAV format: " << filepath << std::endl;
+        return;
     }
 
     unsigned int chunk_size;
@@ -452,6 +461,7 @@ void fcal::audio_stream::read_wav_header()
     if(strcmp(wav_type, "data") < 0)
     {
         std::cerr << "Missing data: " << filepath << std::endl;
+        return;
     }
 
     fread(&length, sizeof(DWORD), 1, file);
@@ -523,6 +533,12 @@ float* generate_sin_wave(unsigned int buffer_frame_length)
 //Resets a stream and initializes an audio_task to play said stream.
 void fcal::play_stream(audio_stream* stream)
 {
+    if(!stream->is_valid())
+    {
+        std::cerr << "Invalid stream: " << stream << std::endl;
+        return;
+    }
+    
     stream->reset();
     
     audio_task task;
