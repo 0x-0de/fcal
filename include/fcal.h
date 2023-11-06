@@ -40,16 +40,6 @@ namespace fcal
             float volume, balance_left, balance_right;
     };
 
-    class DLL_FEATURE audio_source
-    {
-        public:
-            audio_source();
-            ~audio_source();
-        
-        private:
-            audio_stream* stream;
-    };
-
     DLL_FEATURE void open(unsigned int requested_buffer_time);
     DLL_FEATURE void close();
 
