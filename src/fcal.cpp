@@ -381,6 +381,17 @@ float* fcal::audio_stream::pull(unsigned int frames, WAVEFORMATEX* native_format
     return data;
 }
 
+void skip_if_junk(FILE* file, std::vector<unsigned int>& offsets, std::vector<unsigned int>& sizes)
+{
+    if(offsets.size() != 0 && offsets[0] == (unsigned int) ftell(file))
+    {
+        fseek(file, sizes[0], SEEK_CUR);
+
+        offsets.erase(offsets.begin());
+        sizes.erase(sizes.begin());
+    }
+}
+
 //Obtains necessary information from the .WAV file header.
 void fcal::audio_stream::read_wav_header()
 {
@@ -390,6 +401,46 @@ void fcal::audio_stream::read_wav_header()
         std::cerr << "Invalid file filepath! " << filepath << std::endl;
         return;
     }
+
+    //Checking for JUNK chunks in the .WAV header.
+
+    std::vector<unsigned int> ignore_offsets, ignore_sizes;
+
+    char junk_check[256];
+    fread(junk_check, sizeof(char), 256, file);
+
+    unsigned int loop_size = 256 - 4;
+    for(unsigned int i = 0; i < loop_size; i++)
+    {
+        char name[5];
+        name[4] = '\0';
+        for(int j = 0; j < 4; j++)
+            name[j] = junk_check[i + j];
+        
+        if(strcmp(name, "JUNK") == 0)
+        {
+            unsigned int ig_size;
+
+            ig_size += junk_check[i + 4];
+            ig_size += junk_check[i + 5] * 256;
+            ig_size += junk_check[i + 6] * 256 * 256;
+            ig_size += junk_check[i + 7] * 256 * 256 * 256;
+
+            ignore_offsets.push_back(i);
+            ignore_sizes.push_back(ig_size + 8);
+
+            loop_size += ig_size + 8;
+            i += ig_size + 7;
+            continue;
+        }
+
+        if(strcmp(name, "data") == 0)
+        {
+            break;
+        }
+    }
+
+    fseek(file, 0, SEEK_SET);
 
     /*
     WAV files are formatted as follows:
@@ -429,6 +480,7 @@ void fcal::audio_stream::read_wav_header()
         return;
     }
 
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(wav_type, sizeof(char), 4, file);
 
     if(strcmp(wav_type, "fmt ") < 0)
@@ -440,14 +492,22 @@ void fcal::audio_stream::read_wav_header()
     unsigned int chunk_size;
     unsigned short format_type;
 
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(&chunk_size, sizeof(DWORD), 1, file);
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(&format_type, sizeof(short), 1, file);
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(&file_format.nChannels, sizeof(WORD), 1, file);
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(&file_format.nSamplesPerSec, sizeof(DWORD), 1, file);
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(&file_format.nAvgBytesPerSec, sizeof(DWORD), 1, file);
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fseek(file, 2, SEEK_CUR); //skip the file length.
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(&file_format.wBitsPerSample, sizeof(WORD), 1, file);
 
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(wav_type, sizeof(char), 4, file);
 
     if(print_info)
@@ -538,7 +598,7 @@ void fcal::play_stream(audio_stream* stream)
         std::cerr << "Invalid stream: " << stream << std::endl;
         return;
     }
-    
+
     stream->reset();
     
     audio_task task;
