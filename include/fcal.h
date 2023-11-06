@@ -19,6 +19,8 @@ namespace fcal
             float get_balance_right();
             float get_volume();
 
+            bool is_valid();
+
             float* pull(unsigned int frames, WAVEFORMATEX* native_format, bool* end);
 
             void reset();
