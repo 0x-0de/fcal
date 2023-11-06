@@ -304,6 +304,11 @@ float fcal::audio_stream::get_volume()
     return volume;
 }
 
+bool fcal::audio_stream::is_valid()
+{
+    return success_init;
+}
+
 //Pulls a subset of data out of a .WAV file and converts to a float stream compliant with the native_format format and modifiers such as gain/balance. This function
 //is accessed by the audio buffer loop to play an audio stream.
 float* fcal::audio_stream::pull(unsigned int frames, WAVEFORMATEX* native_format, bool* end)
@@ -376,6 +381,17 @@ float* fcal::audio_stream::pull(unsigned int frames, WAVEFORMATEX* native_format
     return data;
 }
 
+void skip_if_junk(FILE* file, std::vector<unsigned int>& offsets, std::vector<unsigned int>& sizes)
+{
+    if(offsets.size() != 0 && offsets[0] == (unsigned int) ftell(file))
+    {
+        fseek(file, sizes[0], SEEK_CUR);
+
+        offsets.erase(offsets.begin());
+        sizes.erase(sizes.begin());
+    }
+}
+
 //Obtains necessary information from the .WAV file header.
 void fcal::audio_stream::read_wav_header()
 {
@@ -383,7 +399,48 @@ void fcal::audio_stream::read_wav_header()
     if(!file)
     {
         std::cerr << "Invalid file filepath! " << filepath << std::endl;
+        return;
     }
+
+    //Checking for JUNK chunks in the .WAV header.
+
+    std::vector<unsigned int> ignore_offsets, ignore_sizes;
+
+    char junk_check[256];
+    fread(junk_check, sizeof(char), 256, file);
+
+    unsigned int loop_size = 256 - 4;
+    for(unsigned int i = 0; i < loop_size; i++)
+    {
+        char name[5];
+        name[4] = '\0';
+        for(int j = 0; j < 4; j++)
+            name[j] = junk_check[i + j];
+        
+        if(strcmp(name, "JUNK") == 0)
+        {
+            unsigned int ig_size;
+
+            ig_size += junk_check[i + 4];
+            ig_size += junk_check[i + 5] * 256;
+            ig_size += junk_check[i + 6] * 256 * 256;
+            ig_size += junk_check[i + 7] * 256 * 256 * 256;
+
+            ignore_offsets.push_back(i);
+            ignore_sizes.push_back(ig_size + 8);
+
+            loop_size += ig_size + 8;
+            i += ig_size + 7;
+            continue;
+        }
+
+        if(strcmp(name, "data") == 0)
+        {
+            break;
+        }
+    }
+
+    fseek(file, 0, SEEK_SET);
 
     /*
     WAV files are formatted as follows:
@@ -411,6 +468,7 @@ void fcal::audio_stream::read_wav_header()
     {
         std::cerr << "Invalid .WAV type: " << filepath << std::endl;
         std::cerr << "Reads: " << wav_type << std::endl;
+        return;
     }
 
     fseek(file, sizeof(DWORD), SEEK_CUR); //skip the file length.
@@ -419,26 +477,37 @@ void fcal::audio_stream::read_wav_header()
     if(strcmp(wav_type, "WAVE") < 0)
     {
         std::cerr << "WAVE tag not present: " << filepath << std::endl;
+        return;
     }
 
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(wav_type, sizeof(char), 4, file);
 
     if(strcmp(wav_type, "fmt ") < 0)
     {
         std::cerr << "Invalid .WAV format: " << filepath << std::endl;
+        return;
     }
 
     unsigned int chunk_size;
     unsigned short format_type;
 
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(&chunk_size, sizeof(DWORD), 1, file);
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(&format_type, sizeof(short), 1, file);
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(&file_format.nChannels, sizeof(WORD), 1, file);
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(&file_format.nSamplesPerSec, sizeof(DWORD), 1, file);
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(&file_format.nAvgBytesPerSec, sizeof(DWORD), 1, file);
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fseek(file, 2, SEEK_CUR); //skip the file length.
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(&file_format.wBitsPerSample, sizeof(WORD), 1, file);
 
+    skip_if_junk(file, ignore_offsets, ignore_sizes);
     fread(wav_type, sizeof(char), 4, file);
 
     if(print_info)
@@ -452,6 +521,7 @@ void fcal::audio_stream::read_wav_header()
     if(strcmp(wav_type, "data") < 0)
     {
         std::cerr << "Missing data: " << filepath << std::endl;
+        return;
     }
 
     fread(&length, sizeof(DWORD), 1, file);
@@ -523,6 +593,12 @@ float* generate_sin_wave(unsigned int buffer_frame_length)
 //Resets a stream and initializes an audio_task to play said stream.
 void fcal::play_stream(audio_stream* stream)
 {
+    if(!stream->is_valid())
+    {
+        std::cerr << "Invalid stream: " << stream << std::endl;
+        return;
+    }
+
     stream->reset();
     
     audio_task task;
@@ -614,25 +690,29 @@ void write_buffer(unsigned char* data, unsigned int buffer_frame_length)
     delete[] f_data;
 }
 
-//Opens and maintains the audio rendering thread, used by WASAPI.
-HRESULT thread_open()
+static IMMDeviceEnumerator* device_enumerator;
+static IMMDevice* audio_device;
+static IAudioClient* audio_client;
+static IAudioRenderClient* audio_render_client;
+
+static unsigned int buffer_frame_size;
+
+HRESULT wasapi_init()
 {
     //Initialize Windows COM library.
     HRESULT hr = CoInitialize(NULL);
     VERIFY(hr);
 
     //Create a Windows multimedia device enumerator instance. As of 2023, this is only used for getting audio endpoint devices.
-    IMMDeviceEnumerator* device_enumerator;
     hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**) &device_enumerator);
     VERIFY(hr);
 
     //Get the actual audio device (headphones/speakers) to be used for playback (rendering).
-    IMMDevice* audio_device;
     hr = device_enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &audio_device);
     VERIFY(hr);
 
     //The AudioClient interface is what we use to create an audio stream between the application and engine layer.
-    IAudioClient* audio_client;
+    
     hr = audio_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL, (void**) &audio_client);
     VERIFY(hr);
 
@@ -641,14 +721,12 @@ HRESULT thread_open()
     VERIFY(hr);
 
     //Initializing the audio stream.
-    unsigned int buffer_frame_size;
     hr = audio_client->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, (REFERENCE_TIME) (req_buffer_ms * 10000), 0, format, NULL);
     VERIFY(hr);
     hr = audio_client->GetBufferSize(&buffer_frame_size);
     VERIFY(hr);
 
     //Getting a render client. This will let us actually write to the rendering buffer, which will then get sent down to the audio engine.
-    IAudioRenderClient* audio_render_client;
     hr = audio_client->GetService(__uuidof(IAudioRenderClient), (void**) &audio_render_client);
     VERIFY(hr);
 
@@ -667,8 +745,14 @@ HRESULT thread_open()
         std::cout << "     Frames/ms: " << frame_per_msec << std::endl;
     }
 
+    return hr;
+}
+
+//Opens and maintains the audio rendering thread, used by WASAPI.
+HRESULT thread_open()
+{
     //Starting the audio client, this will begin playback.
-    hr = audio_client->Start();
+    HRESULT hr = audio_client->Start();
     VERIFY(hr);
 
     unsigned char* data;
@@ -715,7 +799,13 @@ void fcal::open(unsigned int requested_buffer_time)
     std::vector<audio_task>().swap(tasks);
     active = true;
     req_buffer_ms = requested_buffer_time;
-    audio_thread = new std::thread(thread_open);
+
+    HRESULT hr = wasapi_init();
+    
+    if(check_result(hr)) 
+        audio_thread = new std::thread(thread_open);
+    else
+        std::cerr << "Failed to start audio playback thread." << std::endl;
 }
 
 //Closes the audio rendering (playback) thread.
