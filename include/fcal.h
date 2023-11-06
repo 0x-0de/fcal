@@ -5,9 +5,11 @@
 
 #include <string>
 
+#define DLL_FEATURE __declspec(dllexport)
+
 namespace fcal
 {
-    class audio_stream
+    class DLL_FEATURE audio_stream
     {
         public:
             audio_stream(std::string filepath);
@@ -38,14 +40,14 @@ namespace fcal
             float volume, balance_left, balance_right;
     };
 
-    void open(unsigned int requested_buffer_time);
-    void close();
+    DLL_FEATURE void open(unsigned int requested_buffer_time);
+    DLL_FEATURE void close();
 
-    void play_test_sound(unsigned int ms);
-    void play_stream(audio_stream* stream);
+    DLL_FEATURE void play_test_sound(unsigned int ms);
+    DLL_FEATURE void play_stream(audio_stream* stream);
 
-    void disable_info_print();
-    void enable_info_print();
+    DLL_FEATURE void disable_info_print();
+    DLL_FEATURE void enable_info_print();
 }
 
 #endif

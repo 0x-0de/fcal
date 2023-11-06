@@ -614,25 +614,29 @@ void write_buffer(unsigned char* data, unsigned int buffer_frame_length)
     delete[] f_data;
 }
 
-//Opens and maintains the audio rendering thread, used by WASAPI.
-HRESULT thread_open()
+static IMMDeviceEnumerator* device_enumerator;
+static IMMDevice* audio_device;
+static IAudioClient* audio_client;
+static IAudioRenderClient* audio_render_client;
+
+static unsigned int buffer_frame_size;
+
+HRESULT wasapi_init()
 {
     //Initialize Windows COM library.
     HRESULT hr = CoInitialize(NULL);
     VERIFY(hr);
 
     //Create a Windows multimedia device enumerator instance. As of 2023, this is only used for getting audio endpoint devices.
-    IMMDeviceEnumerator* device_enumerator;
     hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**) &device_enumerator);
     VERIFY(hr);
 
     //Get the actual audio device (headphones/speakers) to be used for playback (rendering).
-    IMMDevice* audio_device;
     hr = device_enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &audio_device);
     VERIFY(hr);
 
     //The AudioClient interface is what we use to create an audio stream between the application and engine layer.
-    IAudioClient* audio_client;
+    
     hr = audio_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL, (void**) &audio_client);
     VERIFY(hr);
 
@@ -641,14 +645,12 @@ HRESULT thread_open()
     VERIFY(hr);
 
     //Initializing the audio stream.
-    unsigned int buffer_frame_size;
     hr = audio_client->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, (REFERENCE_TIME) (req_buffer_ms * 10000), 0, format, NULL);
     VERIFY(hr);
     hr = audio_client->GetBufferSize(&buffer_frame_size);
     VERIFY(hr);
 
     //Getting a render client. This will let us actually write to the rendering buffer, which will then get sent down to the audio engine.
-    IAudioRenderClient* audio_render_client;
     hr = audio_client->GetService(__uuidof(IAudioRenderClient), (void**) &audio_render_client);
     VERIFY(hr);
 
@@ -667,8 +669,14 @@ HRESULT thread_open()
         std::cout << "     Frames/ms: " << frame_per_msec << std::endl;
     }
 
+    return hr;
+}
+
+//Opens and maintains the audio rendering thread, used by WASAPI.
+HRESULT thread_open()
+{
     //Starting the audio client, this will begin playback.
-    hr = audio_client->Start();
+    HRESULT hr = audio_client->Start();
     VERIFY(hr);
 
     unsigned char* data;
@@ -715,7 +723,13 @@ void fcal::open(unsigned int requested_buffer_time)
     std::vector<audio_task>().swap(tasks);
     active = true;
     req_buffer_ms = requested_buffer_time;
-    audio_thread = new std::thread(thread_open);
+
+    HRESULT hr = wasapi_init();
+    
+    if(check_result(hr)) 
+        audio_thread = new std::thread(thread_open);
+    else
+        std::cerr << "Failed to start audio playback thread." << std::endl;
 }
 
 //Closes the audio rendering (playback) thread.
