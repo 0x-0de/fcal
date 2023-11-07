@@ -4,11 +4,19 @@
 #include "windows.h"
 
 #include <string>
+#include <vector>
 
 #define DLL_FEATURE __declspec(dllexport)
 
 namespace fcal
 {
+    struct audio_task
+    {
+        float* data;
+        bool stream_end;
+        unsigned int length, offset, type;
+    };
+
     class DLL_FEATURE audio_stream
     {
         public:
@@ -21,9 +29,7 @@ namespace fcal
 
             bool is_valid();
 
-            float* pull(unsigned int frames, WAVEFORMATEX* native_format, bool* end);
-
-            void reset();
+            float* pull(unsigned int& frame_offset, unsigned int frames, WAVEFORMATEX* native_format, bool* end);
 
             void set_balance(float left, float right);
             void set_volume(float val);
@@ -37,16 +43,41 @@ namespace fcal
             void read_wav_header();
 
             WAVEFORMATEX file_format;
-            unsigned int length, offset, file_data_offset;
+            unsigned int length, file_data_offset;
 
             float volume, balance_left, balance_right;
+    };
+
+    class DLL_FEATURE audio_source
+    {
+        public:
+            audio_source();
+            ~audio_source();
+
+            audio_task* get_task();
+
+            bool is_playing();
+
+            void renew_task(unsigned int frame_length, WAVEFORMATEX* format);
+
+            void play(audio_stream* stream);
+            void stop(audio_stream* stream);
+        private:
+            std::vector<audio_stream*> streams;
+            std::vector<unsigned int> stream_offsets;
+
+            std::vector<audio_stream*> stop_requests;
+
+            audio_task* task;
     };
 
     DLL_FEATURE void open(unsigned int requested_buffer_time);
     DLL_FEATURE void close();
 
     DLL_FEATURE void play_test_sound(unsigned int ms);
-    DLL_FEATURE void play_stream(audio_stream* stream);
+
+    DLL_FEATURE void register_source(audio_source* source);
+    DLL_FEATURE void remove_source(audio_source* source);
 
     DLL_FEATURE void disable_info_print();
     DLL_FEATURE void enable_info_print();

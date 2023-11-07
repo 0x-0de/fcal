@@ -3,7 +3,6 @@
 #include <cmath>
 #include <iostream>
 #include <thread>
-#include <vector>
 
 #include "comdef.h"
 
@@ -11,7 +10,7 @@
 #include "audioclient.h"
 
 #define TASKTYPE_SINGLE 0
-#define TASKTYPE_STREAM 1
+#define TASKTYPE_SOURCE 1
 
 #define VERIFY(hr) if(!check_result(hr)) return hr
 
@@ -21,14 +20,6 @@ static bool print_info = false;
 The audio_task structure contains basic information about a clip of audio that needs to be played, including the clip itself, as well as it's
 length, source (if it's a stream), and type.
 */
-
-struct audio_task
-{
-    float* data;
-    fcal::audio_stream* stream;
-    bool stream_end;
-    unsigned int length, offset, type;
-};
 
 //Linear interpolation - used for sample rate conversions.
 float util_lerp(float a, float b, float x)
@@ -311,14 +302,16 @@ bool fcal::audio_stream::is_valid()
 
 //Pulls a subset of data out of a .WAV file and converts to a float stream compliant with the native_format format and modifiers such as gain/balance. This function
 //is accessed by the audio buffer loop to play an audio stream.
-float* fcal::audio_stream::pull(unsigned int frames, WAVEFORMATEX* native_format, bool* end)
+float* fcal::audio_stream::pull(unsigned int& frame_offset, unsigned int frames, WAVEFORMATEX* native_format, bool* end)
 {
     FILE* file = fopen(filepath.c_str(), "rb");
-    fseek(file, file_data_offset + offset, SEEK_CUR); //Go to data begin.
 
-    unsigned int remaining = length - offset;
+    unsigned int frame_size = file_format.nChannels * file_format.wBitsPerSample / 8;
+    unsigned int data_offset = file_data_offset + frame_offset * frame_size;
+    fseek(file, data_offset, SEEK_CUR); //Go to data begin.
 
-    unsigned int data_size = frames * file_format.nChannels * file_format.wBitsPerSample / 8;
+    unsigned int remaining = length - (data_offset - file_data_offset);
+    unsigned int data_size = frames * frame_size;
     unsigned int size = 0;
     
     if(remaining < data_size)
@@ -370,14 +363,13 @@ float* fcal::audio_stream::pull(unsigned int frames, WAVEFORMATEX* native_format
     delete[] raw_data;
 
     float sr_ratio = ((float) file_format.nSamplesPerSec / (float) native_format->nSamplesPerSec);
-    float channel_factor = (float) native_format->nChannels / 4;
-    int frame_size = file_format.nChannels * file_format.wBitsPerSample / 8;
 
-    size = data_size * channel_factor * sr_ratio;
+    size = data_size * sr_ratio;
     size -= size % frame_size;
 
+    frame_offset += size / frame_size;
+
     //If you don't make sure the offset moves by the right interval, the audio will stop working altogether.
-    offset += size;
     return data;
 }
 
@@ -525,19 +517,11 @@ void fcal::audio_stream::read_wav_header()
     }
 
     fread(&length, sizeof(DWORD), 1, file);
-
-    offset = 0;
     file_data_offset = ftell(file);
 
     success_init = true;
     
     fclose(file);
-}
-
-//Resets all necessary information relating to stream playback.
-void fcal::audio_stream::reset()
-{
-    offset = 0;
 }
 
 //Sets the balance (gain in both the 'left' and 'right' speakers) of the audio stream.
@@ -553,6 +537,98 @@ void fcal::audio_stream::set_volume(float val)
     volume = val;
 }
 
+fcal::audio_source::audio_source()
+{
+    task = new audio_task();
+}
+
+fcal::audio_source::~audio_source()
+{
+    delete task;
+}
+
+fcal::audio_task* fcal::audio_source::get_task()
+{
+    return task;
+}
+
+bool fcal::audio_source::is_playing()
+{
+    return streams.size() != 0;
+}
+
+void fcal::audio_source::renew_task(unsigned int frame_length, WAVEFORMATEX* format)
+{
+    if(task->offset < task->length) return;
+
+    //Maybe I should find a better way to do this.
+    for(unsigned int i = 0; i < stop_requests.size(); i++)
+    {
+        for(unsigned int j = 0; j < streams.size(); j++)
+        {
+            if(streams[j] == stop_requests[i])
+            {
+                streams.erase(streams.begin() + j);
+                stream_offsets.erase(stream_offsets.begin() + j);
+                i--;
+                break;
+            }
+        }
+    }
+
+    unsigned int size = frame_length * format->nChannels;
+
+    float* sum_data = new float[size];
+    for(unsigned int i = 0; i < size; i++)
+        sum_data[i] = 0;
+
+    for(unsigned int i = 0; i < streams.size(); i++)
+    {
+        bool end = false;
+        float* data = streams[i]->pull(stream_offsets[i], frame_length, format, &end);
+
+        for(unsigned int j = 0; j < size; j++)
+        {
+            sum_data[j] += data[j];
+        }
+
+        if(end)
+        {
+            streams.erase(streams.begin() + i);
+            stream_offsets.erase(stream_offsets.begin() + i);
+            i--;
+        }
+    }
+
+    task->data = sum_data;
+    task->length = size;
+    task->offset = 0;
+    task->stream_end = false;
+    task->type = TASKTYPE_SOURCE;
+}
+
+void fcal::audio_source::play(audio_stream* stream)
+{
+    streams.push_back(stream);
+    stream_offsets.push_back(0);
+}
+
+void fcal::audio_source::stop(audio_stream* stream)
+{
+    for(unsigned int i = 0; i < streams.size(); i++)
+    {
+        if(streams[i] == stream)
+        {
+            stop_requests.push_back(stream);
+            break;
+        }
+        if(i == streams.size() - 1)
+        {
+            std::cerr << "Could not locate stream to stop: " << stream << std::endl;
+        }
+    }
+}
+
 static std::thread* audio_thread;
 
 static bool active;
@@ -561,7 +637,8 @@ static int req_buffer_ms, buffer_duration_ms, sin_offset;
 static double frame_per_msec;
 static WAVEFORMATEX* format;
 
-static std::vector<audio_task> tasks;
+static std::vector<fcal::audio_task> tasks;
+static std::vector<fcal::audio_source*> sources;
 
 //Generates a sine wave at 400 hz for buffer_frame_length frames. This is used as a test sound.
 float* generate_sin_wave(unsigned int buffer_frame_length)
@@ -590,26 +667,6 @@ float* generate_sin_wave(unsigned int buffer_frame_length)
     return data;
 }
 
-//Resets a stream and initializes an audio_task to play said stream.
-void fcal::play_stream(audio_stream* stream)
-{
-    if(!stream->is_valid())
-    {
-        std::cerr << "Invalid stream: " << stream << std::endl;
-        return;
-    }
-
-    stream->reset();
-    
-    audio_task task;
-    task.stream = stream;
-    task.length = frame_per_msec * buffer_duration_ms;
-    task.offset = 0;
-    task.data = stream->pull(task.length, format, &task.stream_end);
-    task.type = TASKTYPE_STREAM;
-    tasks.push_back(task);
-}
-
 //Plays a test sound (sine wave at 400 Hz) for 'ms' milliseconds.
 void fcal::play_test_sound(unsigned int ms)
 {
@@ -619,6 +676,29 @@ void fcal::play_test_sound(unsigned int ms)
     task.offset = 0;
     task.type = TASKTYPE_SINGLE;
     tasks.push_back(task);
+}
+
+//Adds an audio_source object to the sources list. This means that the playback thread will be listening for streams playing on this source.
+void fcal::register_source(fcal::audio_source* source)
+{
+    sources.push_back(source);
+}
+
+//Removes an audio_source object from the sources list. The audio playback thread will no longer listen to streams on this source.
+void fcal::remove_source(fcal::audio_source* source)
+{
+    for(unsigned int i = 0; i < sources.size(); i++)
+    {
+        if(sources[i] == source)
+        {
+            sources.erase(sources.begin() + i);
+            break;
+        }
+        if(i == sources.size() - 1)
+        {
+            std::cerr << "Couldn't locate source to remove: " << source << std::endl;
+        }
+    }
 }
 
 //Error checker utility function for the WASAPI.
@@ -650,38 +730,31 @@ void write_buffer(unsigned char* data, unsigned int buffer_frame_length)
         f_data[i] = 0;
     }
 
+    for(unsigned int i = 0; i < sources.size(); i++)
+    {
+        
+    }
+
     for(unsigned int i = 0; i < float_array_length; i++)
     {
         for(unsigned int t = 0; t < tasks.size(); t++)
         {
-            switch(tasks[t].type)
+            f_data[i] += tasks[t].data[tasks[t].offset];
+            tasks[t].offset++;
+            if(tasks[t].offset >= tasks[t].length)
             {
-                case TASKTYPE_SINGLE:
-                    f_data[i] += tasks[t].data[tasks[t].offset];
-                    tasks[t].offset++;
-                    if(tasks[t].offset >= tasks[t].length)
-                    {
-                        delete[] tasks[t].data;
-                        tasks.erase(tasks.begin() + t);
-                    }
-                    break;
-                case TASKTYPE_STREAM:
-                    f_data[i] += tasks[t].data[tasks[t].offset];
-                    tasks[t].offset++;
-                    if(tasks[t].offset >= tasks[t].length)
-                    {
-                        delete[] tasks[t].data;
-                        if(tasks[t].stream_end)
-                        {
-                            tasks.erase(tasks.begin() + t);
-                        }
-                        else
-                        {
-                            tasks[t].data = tasks[t].stream->pull(tasks[t].length, format, &tasks[t].stream_end);
-                            tasks[t].offset = 0;
-                        }
-                    }
-                    break;
+                delete[] tasks[t].data;
+                tasks.erase(tasks.begin() + t);
+            }
+        }
+        for(unsigned int s = 0; s < sources.size(); s++)
+        {
+            if(sources[s]->is_playing())
+            {
+                sources[s]->renew_task(buffer_frame_length, format);
+                fcal::audio_task* t = sources[s]->get_task();
+                f_data[i] += t->data[t->offset];
+                t->offset++;
             }
         }
     }
