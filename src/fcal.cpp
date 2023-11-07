@@ -540,10 +540,12 @@ void fcal::audio_stream::set_volume(float val)
 fcal::audio_source::audio_source()
 {
     task = new audio_task();
+    task->data = new float[1];
 }
 
 fcal::audio_source::~audio_source()
 {
+    delete[] task->data;
     delete task;
 }
 
@@ -592,6 +594,8 @@ void fcal::audio_source::renew_task(unsigned int frame_length, WAVEFORMATEX* for
             sum_data[j] += data[j];
         }
 
+        delete[] data;
+
         if(end)
         {
             streams.erase(streams.begin() + i);
@@ -600,6 +604,7 @@ void fcal::audio_source::renew_task(unsigned int frame_length, WAVEFORMATEX* for
         }
     }
 
+    delete[] task->data;
     task->data = sum_data;
     task->length = size;
     task->offset = 0;
