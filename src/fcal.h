@@ -54,6 +54,7 @@ namespace fcal
             audio_source();
             ~audio_source();
 
+            unsigned int get_stream_list_size();
             audio_task* get_task();
 
             bool is_playing();

@@ -261,7 +261,7 @@ fcal::audio_stream::~audio_stream()
 
 }
 
-//Applies the volume modifier to the float stream.
+//Applies the balance modifier to the float stream.
 void fcal::audio_stream::apply_balance(float* data, unsigned int data_size)
 {
     for(unsigned int i = 0; i < data_size; i += 2)
@@ -271,7 +271,7 @@ void fcal::audio_stream::apply_balance(float* data, unsigned int data_size)
     }
 }
 
-//Applies the balance modifier to the float stream.
+//Applies the volume modifier to the float stream.
 void fcal::audio_stream::apply_volume(float* data, unsigned int data_size)
 {
     for(unsigned int i = 0; i < data_size; i++)
@@ -325,13 +325,13 @@ float* fcal::audio_stream::pull(unsigned int& frame_offset, unsigned int frames,
         *end = false;
     }
 
-    unsigned char* raw_data = new unsigned char[data_size];
+    unsigned char raw_data[data_size];
     fread(raw_data, 1, size, file);
     fclose(file);
 
-    if(remaining < data_size)
+    if(size < data_size)
     {
-        for(unsigned int i = remaining; i < data_size; i++)
+        for(unsigned int i = size; i < data_size; i++)
         {
             raw_data[i] = 0;
         }
@@ -343,10 +343,13 @@ float* fcal::audio_stream::pull(unsigned int& frame_offset, unsigned int frames,
     conv_bytes_to_floats(data, raw_data, data_size, bytes_per_float);
     size /= bytes_per_float;
 
+    unsigned int conv_size = data_size / bytes_per_float;
     if(file_format.nChannels != native_format->nChannels)
     {
         //Convert to (most likely) stereo channel.
-        conv_channels(&file_format, native_format, &data, &size);
+        conv_size = data_size / bytes_per_float; //Shoutout heap corruption.
+        conv_channels(&file_format, native_format, &data, &conv_size);
+        size *= conv_size / (data_size / bytes_per_float);
     }
 
     if(file_format.nSamplesPerSec != native_format->nSamplesPerSec)
@@ -356,11 +359,9 @@ float* fcal::audio_stream::pull(unsigned int& frame_offset, unsigned int frames,
         float s = (float) size * ((float) file_format.nSamplesPerSec / (float) native_format->nSamplesPerSec);
         size = (int) s;
     }
-
-    apply_volume(data, data_size / bytes_per_float);
-    apply_balance(data, data_size / bytes_per_float);
-
-    delete[] raw_data;
+    
+    apply_volume(data, conv_size);
+    apply_balance(data, conv_size);
 
     float sr_ratio = ((float) file_format.nSamplesPerSec / (float) native_format->nSamplesPerSec);
 
@@ -554,6 +555,11 @@ fcal::audio_task* fcal::audio_source::get_task()
     return task;
 }
 
+unsigned int fcal::audio_source::get_stream_list_size()
+{
+    return streams.size();
+}
+
 bool fcal::audio_source::is_playing()
 {
     return streams.size() != 0;
@@ -581,6 +587,7 @@ void fcal::audio_source::renew_task(unsigned int frame_length, WAVEFORMATEX* for
     unsigned int size = frame_length * format->nChannels;
 
     float* sum_data = new float[size];
+
     for(unsigned int i = 0; i < size; i++)
         sum_data[i] = 0;
 
@@ -733,11 +740,6 @@ void write_buffer(unsigned char* data, unsigned int buffer_frame_length)
     for(unsigned int i = 0; i < float_array_length; i++)
     {
         f_data[i] = 0;
-    }
-
-    for(unsigned int i = 0; i < sources.size(); i++)
-    {
-        
     }
 
     for(unsigned int i = 0; i < float_array_length; i++)
