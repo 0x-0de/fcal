@@ -12,5 +12,4 @@ Current features:
 
 Planned features:
   - Linux (Ubuntu, at least) support.
-  - Stream/source halting.
   - .OGG file reading.
