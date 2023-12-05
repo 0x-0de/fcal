@@ -1,7 +1,6 @@
 # fcal
-## Free C++ Audio Library
 
-FCAL (Free C++ Audio Library) is an open-source audio library for C++ applications, currently just supporting Windows, allowing developers to play audio in a C++ environment.
+fcal (Free C++ Audio Library) is an open-source audio library for C++ applications, currently just supporting Windows, allowing developers to play audio in a C++ environment.
 
 **Current features**:
   - WASAPI integration
@@ -15,7 +14,7 @@ FCAL (Free C++ Audio Library) is an open-source audio library for C++ applicatio
   - .OGG file reading.
 
 As of v0.2, the only files necessary for the features of this library are fcal.h and fcal.dll if linking dynamically, or fcal.cpp if linking statically. Examples will be provided
-in the "examples" folder, and documentation will be provided in the "docs" folder.
+in the ```src/examples``` folder, and documentation will be provided in the ```docs``` folder.
 
 ### Compiling
 
