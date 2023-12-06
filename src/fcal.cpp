@@ -245,6 +245,7 @@ fcal::audio_stream::audio_stream(std::string filepath) : filepath(filepath)
     volume = 1;
     balance_left = 1;
     balance_right = 1;
+    pitch = 1;
 
     if(filepath.substr(filepath.length() - 4) == ".wav")
     {
@@ -254,11 +255,15 @@ fcal::audio_stream::audio_stream(std::string filepath) : filepath(filepath)
     {
         std::cerr << "File type unsupported: " << filepath << std::endl;
     }
+
+    flags = new bool[1];
+    for(int i = 0; i < 1; i++)
+        flags[i] = false;
 }
 
 fcal::audio_stream::~audio_stream()
 {
-
+    delete[] flags;
 }
 
 //Applies the balance modifier to the float stream.
@@ -269,6 +274,38 @@ void fcal::audio_stream::apply_balance(float* data, unsigned int data_size)
         data[i] *= balance_left;
         data[i + 1] *= balance_right;
     }
+}
+
+void fcal::audio_stream::apply_pitch(float* data, unsigned int data_size, int channels)
+{
+    float* current_data = new float[data_size];
+    for(unsigned int i = 0; i < data_size; i++)
+        current_data[i] = data[i];
+
+    double point = 0;
+    int size_of_point = channels;
+
+    for(unsigned int i = 0; i < data_size; i += size_of_point)
+    {
+        for(unsigned int c = 0; c < channels; c++)
+        {
+            int si = (int) point * size_of_point + c;
+            int ei = (int) point * size_of_point + c + size_of_point;
+
+            float start, end;
+            start = current_data[si];
+            end = current_data[ei];
+
+            float offset = point - (int) point;
+
+            float p = util_lerp(start, end, offset);
+            data[i + c] = p;
+        }
+
+        point += pitch;
+    }
+
+    delete[] current_data;
 }
 
 //Applies the volume modifier to the float stream.
@@ -290,9 +327,19 @@ float fcal::audio_stream::get_balance_right()
     return balance_right;
 }
 
+float fcal::audio_stream::get_pitch()
+{
+    return pitch;
+}
+
 float fcal::audio_stream::get_volume()
 {
     return volume;
+}
+
+bool fcal::audio_stream::get_flag(unsigned int flag)
+{
+    return flags[flag];
 }
 
 bool fcal::audio_stream::is_valid()
@@ -302,7 +349,7 @@ bool fcal::audio_stream::is_valid()
 
 //Pulls a subset of data out of a .WAV file and converts to a float stream compliant with the native_format format and modifiers such as gain/balance. This function
 //is accessed by the audio buffer loop to play an audio stream.
-float* fcal::audio_stream::pull(unsigned int& frame_offset, unsigned int frames, WAVEFORMATEX* native_format, bool* end)
+float* fcal::audio_stream::pull(unsigned int& frame_offset, unsigned int frames, WAVEFORMATEX* native_format, bool* end, float pitch_master)
 {
     FILE* file = fopen(filepath.c_str(), "rb");
 
@@ -310,67 +357,86 @@ float* fcal::audio_stream::pull(unsigned int& frame_offset, unsigned int frames,
     unsigned int data_offset = file_data_offset + frame_offset * frame_size;
     fseek(file, data_offset, SEEK_CUR); //Go to data begin.
 
+    float sample_modifier = ((float) file_format.nSamplesPerSec / (float) native_format->nSamplesPerSec) * pitch * pitch_master;
+
     unsigned int remaining = length - (data_offset - file_data_offset);
+    unsigned int frames_to_sample = frames * sample_modifier;
+    unsigned int sample_data_size = (frames_to_sample + 8) * frame_size; //We add an extra 8 frames at the end to account for any precision and rounding error.
     unsigned int data_size = frames * frame_size;
-    unsigned int size = 0;
+    unsigned int read_size = 0;
     
-    if(remaining < data_size)
+    if(remaining < sample_data_size)
     {
-        size = remaining;
+        read_size = remaining;
         *end = true;
     }
     else
     {
-        size = data_size;
+        read_size = sample_data_size;
         *end = false;
     }
 
-    unsigned char raw_data[data_size];
-    fread(raw_data, 1, size, file);
+    unsigned char raw_data[sample_data_size];
+    fread(raw_data, 1, read_size, file);
     fclose(file);
 
-    if(size < data_size)
+    if(read_size < sample_data_size)
     {
-        for(unsigned int i = size; i < data_size; i++)
+        for(unsigned int i = read_size; i < sample_data_size; i++)
         {
             raw_data[i] = 0;
         }
     }
 
     int bytes_per_float = file_format.wBitsPerSample / 8;
-    float* data = new float[data_size / bytes_per_float];
+    float* initial_data = new float[sample_data_size / bytes_per_float];
 
-    conv_bytes_to_floats(data, raw_data, data_size, bytes_per_float);
-    size /= bytes_per_float;
+    conv_bytes_to_floats(initial_data, raw_data, sample_data_size, bytes_per_float);
 
-    unsigned int conv_size = data_size / bytes_per_float;
+    unsigned int conv_size = sample_data_size / bytes_per_float;
     if(file_format.nChannels != native_format->nChannels)
     {
         //Convert to (most likely) stereo channel.
-        conv_size = data_size / bytes_per_float; //Shoutout heap corruption.
-        conv_channels(&file_format, native_format, &data, &conv_size);
-        size *= conv_size / (data_size / bytes_per_float);
+        conv_channels(&file_format, native_format, &initial_data, &conv_size); //Shoutout heap corruption.
     }
 
-    if(file_format.nSamplesPerSec != native_format->nSamplesPerSec)
+    unsigned int final_size = data_size / bytes_per_float;
+    float* data = new float[final_size];
+    float point = 0;
+
+    int size_of_point = native_format->nChannels;
+
+    for(unsigned int i = 0; i < final_size; i += size_of_point)
     {
-        //Convert to native sample rate.
-        conv_sample_rate(&file_format, native_format, data, size);
-        float s = (float) size * ((float) file_format.nSamplesPerSec / (float) native_format->nSamplesPerSec);
-        size = (int) s;
+        for(unsigned int c = 0; c < size_of_point; c++)
+        {
+            int si = (int) point * size_of_point + c;
+            int ei = (int) point * size_of_point + c + size_of_point;
+
+            //if(si >= conv_size) si = conv_size - size_of_point + c;
+            //if(ei >= conv_size) ei = conv_size - size_of_point + c;
+
+            float start, end;
+            start = initial_data[si];
+            end = initial_data[ei];
+
+            float offset = point - (int) point;
+
+            float p = util_lerp(start, end, offset);
+            data[i + c] = p;
+        }
+
+        point += sample_modifier;
     }
+
+    delete[] initial_data;
     
-    apply_volume(data, conv_size);
-    apply_balance(data, conv_size);
-
-    float sr_ratio = ((float) file_format.nSamplesPerSec / (float) native_format->nSamplesPerSec);
-
-    size = data_size * sr_ratio;
-    size -= size % frame_size;
-
-    frame_offset += size / frame_size;
+    apply_volume(data, final_size);
+    apply_balance(data, final_size);
 
     //If you don't make sure the offset moves by the right interval, the audio will stop working altogether.
+    frame_offset += read_size / frame_size - 8;
+
     return data;
 }
 
@@ -532,22 +598,79 @@ void fcal::audio_stream::set_balance(float left, float right)
     balance_right = right;
 }
 
+void fcal::audio_stream::set_pitch(float val)
+{
+    pitch = val;
+}
+
 //Sets the volume (gain) of the audio stream.
 void fcal::audio_stream::set_volume(float val)
 {
     volume = val;
 }
 
+void fcal::audio_stream::toggle_flag(unsigned int flag)
+{
+    if(flags[flag]) flags[flag] = false;
+    else flags[flag] = true;
+}
+
+static float FCAL_master_volume, FCAL_master_pitch, FCAL_master_balance_left, FCAL_master_balance_right;
+
 fcal::audio_source::audio_source()
 {
     task = new audio_task();
     task->data = new float[1];
+
+    balance_left = 1;
+    balance_right = 1;
+
+    volume = 1;
+
+    pitch = 1;
 }
 
 fcal::audio_source::~audio_source()
 {
     delete[] task->data;
     delete task;
+}
+
+void fcal::audio_source::apply_balance(float* data, unsigned int data_size)
+{
+    for(unsigned int i = 0; i < data_size; i += 2)
+    {
+        data[i] *= balance_left * FCAL_master_balance_left;
+        data[i + 1] *= balance_right * FCAL_master_balance_right;
+    }
+}
+
+void fcal::audio_source::apply_volume(float* data, unsigned int data_size)
+{
+    for(unsigned int i = 0; i < data_size; i++)
+    {
+        data[i] *= volume * FCAL_master_volume;
+    }
+}
+
+float fcal::audio_source::get_balance_left()
+{
+    return balance_left;
+}
+
+float fcal::audio_source::get_balance_right()
+{
+    return balance_right;
+}
+
+float fcal::audio_source::get_volume()
+{
+    return volume;
+}
+
+float fcal::audio_source::get_pitch()
+{
+    return pitch;
 }
 
 fcal::audio_task* fcal::audio_source::get_task()
@@ -578,10 +701,13 @@ void fcal::audio_source::renew_task(unsigned int frame_length, WAVEFORMATEX* for
             {
                 streams.erase(streams.begin() + j);
                 stream_offsets.erase(stream_offsets.begin() + j);
-                i--;
+                j--;
                 break;
             }
         }
+
+        stop_requests.erase(stop_requests.begin() + i);
+        i--;
     }
 
     unsigned int size = frame_length * format->nChannels;
@@ -594,7 +720,8 @@ void fcal::audio_source::renew_task(unsigned int frame_length, WAVEFORMATEX* for
     for(unsigned int i = 0; i < streams.size(); i++)
     {
         bool end = false;
-        float* data = streams[i]->pull(stream_offsets[i], frame_length, format, &end);
+        float prev = stream_offsets[i];
+        float* data = streams[i]->pull(stream_offsets[i], frame_length, format, &end, pitch * FCAL_master_pitch);
 
         for(unsigned int j = 0; j < size; j++)
         {
@@ -605,11 +732,28 @@ void fcal::audio_source::renew_task(unsigned int frame_length, WAVEFORMATEX* for
 
         if(end)
         {
-            streams.erase(streams.begin() + i);
-            stream_offsets.erase(stream_offsets.begin() + i);
-            i--;
+            if(streams[i]->get_flag(FCAL_STRF_LOOP))
+            {
+                unsigned int diff = stream_offsets[i] - prev;
+                stream_offsets[i] = 0;
+                float* new_data = streams[i]->pull(stream_offsets[i], frame_length - diff, format, &end, pitch * FCAL_master_pitch);
+                for(unsigned int j = diff; j < size; j++)
+                {
+                    sum_data[j] += new_data[j - diff];
+                }
+                delete[] new_data;
+            }
+            else
+            {
+                streams.erase(streams.begin() + i);
+                stream_offsets.erase(stream_offsets.begin() + i);
+                i--;
+            }
         }
     }
+
+    apply_balance(sum_data, size);
+    apply_volume(sum_data, size);
 
     delete[] task->data;
     task->data = sum_data;
@@ -639,6 +783,22 @@ void fcal::audio_source::stop(audio_stream* stream)
             std::cerr << "Could not locate stream to stop: " << stream << std::endl;
         }
     }
+}
+
+void fcal::audio_source::set_balance(float left, float right)
+{
+    balance_left = left;
+    balance_right = right;
+}
+
+void fcal::audio_source::set_volume(float value)
+{
+    volume = value;
+}
+
+void fcal::audio_source::set_pitch(float value)
+{
+    pitch = value;
 }
 
 static std::thread* audio_thread;
@@ -880,6 +1040,11 @@ void fcal::open(unsigned int requested_buffer_time)
     active = true;
     req_buffer_ms = requested_buffer_time;
 
+    FCAL_master_volume = 1;
+    FCAL_master_pitch = 1;
+    FCAL_master_balance_left = 1;
+    FCAL_master_balance_right = 1;
+
     HRESULT hr = wasapi_init();
     
     if(check_result(hr)) 
@@ -909,4 +1074,40 @@ void fcal::disable_info_print()
 void fcal::enable_info_print()
 {
     print_info = true;
+}
+
+float fcal::get_balance_left()
+{
+    return FCAL_master_balance_left;
+}
+
+float fcal::get_balance_right()
+{
+    return FCAL_master_balance_right;
+}
+
+float fcal::get_pitch()
+{
+    return FCAL_master_pitch;
+}
+
+float fcal::get_volume()
+{
+    return FCAL_master_volume;
+}
+
+void fcal::set_balance(float left, float right)
+{
+    FCAL_master_balance_left = left;
+    FCAL_master_balance_right = right;
+}
+
+void fcal::set_pitch(float value)
+{
+    FCAL_master_pitch = value;
+}
+
+void fcal::set_volume(float value)
+{
+    FCAL_master_volume = value;
 }
