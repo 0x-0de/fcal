@@ -18,35 +18,31 @@ int main()
 
     fcal::register_source(&source);
 
-    std::string input = "";
-    while(input != "exit")
-    {
-        std::cout << "Testing .wav playback with different formats..." << std::endl;
+    std::cout << "Testing .wav playback with different formats..." << std::endl;
 
-        std::cout << "Playing: 16-bit stereo." << std::endl;
-        source.play(&stereo16);
-        Sleep(1000);
+    std::cout << "Playing: 16-bit stereo." << std::endl;
+    source.play(&stereo16);
+    Sleep(1500);
 
-        std::cout << "Playing: 24-bit stereo." << std::endl;
-        source.play(&stereo24);
-        Sleep(1000);
+    std::cout << "Playing: 24-bit stereo." << std::endl;
+    source.play(&stereo24);
+    Sleep(1500);
 
-        std::cout << "Playing: 32-bit stereo." << std::endl;
-        source.play(&stereo32);
-        Sleep(1000);
+    std::cout << "Playing: 32-bit stereo." << std::endl;
+    source.play(&stereo32);
+    Sleep(1500);
 
-        std::cout << "Playing: 16-bit mono." << std::endl;
-        source.play(&mono16);
-        Sleep(1000);
+    std::cout << "Playing: 16-bit mono." << std::endl;
+    source.play(&mono16);
+    Sleep(1500);
 
-        std::cout << "Playing: 24-bit mono." << std::endl;
-        source.play(&mono24);
-        Sleep(1000);
+    std::cout << "Playing: 24-bit mono." << std::endl;
+    source.play(&mono24);
+    Sleep(1500);
 
-        std::cout << "Playing: 32-bit mono." << std::endl;
-        source.play(&mono32);
-        Sleep(1000);
-    }
+    std::cout << "Playing: 32-bit mono." << std::endl;
+    source.play(&mono32);
+    Sleep(1500);
 
     std::cout << "Test concluded." << std::endl;
 

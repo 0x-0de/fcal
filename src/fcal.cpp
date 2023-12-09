@@ -398,6 +398,7 @@ float* fcal::audio_stream::pull(unsigned int& frame_offset, unsigned int frames,
     {
         //Convert to (most likely) stereo channel.
         conv_channels(&file_format, native_format, &initial_data, &conv_size); //Shoutout heap corruption.
+        data_size *= (float) native_format->nChannels / (float) file_format.nChannels;
     }
 
     unsigned int final_size = data_size / bytes_per_float;
