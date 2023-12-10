@@ -702,7 +702,6 @@ void fcal::audio_source::renew_task(unsigned int frame_length, WAVEFORMATEX* for
             {
                 streams.erase(streams.begin() + j);
                 stream_offsets.erase(stream_offsets.begin() + j);
-                j--;
                 break;
             }
         }
@@ -738,9 +737,9 @@ void fcal::audio_source::renew_task(unsigned int frame_length, WAVEFORMATEX* for
                 unsigned int diff = stream_offsets[i] - prev;
                 stream_offsets[i] = 0;
                 float* new_data = streams[i]->pull(stream_offsets[i], frame_length - diff, format, &end, pitch * FCAL_master_pitch);
-                for(unsigned int j = diff; j < size; j++)
+                for(unsigned int j = diff * format->nChannels; j < size; j++)
                 {
-                    sum_data[j] += new_data[j - diff];
+                    sum_data[j] += new_data[j - (diff * format->nChannels)];
                 }
                 delete[] new_data;
             }
