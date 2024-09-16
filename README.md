@@ -1,3 +1,6 @@
+## ATTENTION: This library is no longer being supported. Please use Crest instead!
+https://github.com/0x-0de/Crest
+
 # fcal
 
 fcal (Free C++ Audio Library) is an open-source audio library for C++ applications, currently just supporting Windows, allowing developers to play audio in a C++ environment.
